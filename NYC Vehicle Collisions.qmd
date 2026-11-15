@@ -1,0 +1,128 @@
+---
+title: "title: "Exploring NYC Motor Vehicle Collisions with dplyr""
+author: "Johnny Maldonado"
+format: html
+editor: visual
+---
+
+## Purpose
+
+This vignette demonstrates how to use `dplyr` to clean, group, summarize, and rank collision records. Our question is: **How do reported collisions and injuries differ among New York City's five boroughs during 2025?** The goal is to teach a reproducible workflow, not to establish which borough has the highest per-driver collision risk.
+
+## Data source
+
+The NYPD's [Motor Vehicle Collisions – Crashes](https://data.cityofnewyork.us/d/h9gi-nx95) dataset provides one record per reported collision. We use the NYC Open Data API to retrieve a fixed calendar year (2025) and only the columns needed for this example. This keeps the tutorial smaller than downloading the entire multi-million-row dataset. Data can be revised by NYPD, so results may change on a later run. The accompanying official data dictionary documents the fields.
+
+## Load packages
+
+```{r}
+library(tidyverse)
+```
+
+## Import the collision data
+
+The API query requests the collision date, borough, unique collision ID, and number of people injured for events in 2025. `read_csv()` loads the returned CSV into a tibble. `show_col_types = FALSE` suppresses the import message.
+
+```{r}
+base_url <- "https://data.cityofnewyork.us/resource/h9gi-nx95.csv"
+
+date_filter <- paste0(
+  "crash_date >= '2025-01-01T00:00:00'",
+  " AND crash_date < '2026-01-01T00:00:00'"
+)
+
+query <- paste0(
+  "$select=collision_id,crash_date,borough,number_of_persons_injured",
+  "&$where=", URLencode(date_filter, reserved = TRUE),
+  "&$order=collision_id",
+  "&$limit=500000"
+)
+
+url <- paste0(base_url, "?", query)
+collisions <- readr::read_csv(url, show_col_types = FALSE)
+
+# Check that the requested year fits within the API limit.
+if (nrow(collisions) == 500000) {
+  stop("The 500,000-row API limit was reached; paginate before interpreting results.")
+}
+
+glimpse(collisions)
+```
+
+If the API is unavailable, download a CSV from the dataset page and replace the `read_csv(url, ...)` line with `read_csv("your_file.csv", show_col_types = FALSE)`. A full CSV export may use uppercase, spaced column headings; apply `janitor::clean_names()` (or rename those columns) before continuing.
+
+## Step 1: Select and filter
+
+`select()` keeps the fields relevant to the question. `filter()` removes records without a recognized borough, since we want a comparison among the five boroughs. `mutate()` converts the injury field to numeric and replaces missing injury counts with zero **for this demonstration only**; missing values should be investigated before substantive reporting.
+
+```{r}
+boroughs <- c("BRONX", "BROOKLYN", "MANHATTAN", "QUEENS", "STATEN ISLAND")
+
+clean_collisions <- collisions %>%
+  select(collision_id, borough, number_of_persons_injured) %>%
+  filter(borough %in% boroughs) %>%
+  mutate(number_of_persons_injured = as.numeric(number_of_persons_injured))
+
+# Inspect missing injury values rather than silently treating them as zero.
+sum(is.na(clean_collisions$number_of_persons_injured))
+```
+
+## Step 2: Group and summarize
+
+`group_by()` creates one group for each borough. `summarise()` then calculates the number of reported collisions, the total recorded injuries, and how many collision records have an injury count greater than zero. `na.rm = TRUE` excludes missing injury values from injury totals.
+
+```{r}
+borough_summary <- clean_collisions %>%
+  group_by(borough) %>%
+  summarise(
+    collisions = n(),
+    persons_injured = sum(number_of_persons_injured, na.rm = TRUE),
+    crashes_with_injuries = sum(number_of_persons_injured > 0, na.rm = TRUE),
+    missing_injury_counts = sum(is.na(number_of_persons_injured)),
+    .groups = "drop"
+  )
+
+borough_summary
+```
+
+## Step 3: Rank the boroughs
+
+`arrange(desc())` sorts the summary from the highest to the lowest number of collisions. This demonstrates ranking without changing the underlying data.
+
+```{r}
+ranked_boroughs <- borough_summary %>%
+  arrange(desc(collisions))
+
+ranked_boroughs
+```
+
+## Step 4: Visualize the result
+
+`ggplot2` is another Tidyverse package. Here `geom_col()` displays the collision counts already computed by `summarise()`. `reorder()` arranges borough names by their counts.
+
+```{r}
+ggplot(ranked_boroughs, aes(x = reorder(borough, collisions), y = collisions)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Reported NYC Motor Vehicle Collisions by Borough (2025)",
+    x = "Borough",
+    y = "Reported collisions",
+    caption = "Source: NYPD Motor Vehicle Collisions – Crashes; records with known borough"
+  ) +
+  theme_minimal()
+```
+
+## Interpretation and limitations
+
+The table and chart show **reported collision counts**, not collision rates. A borough with more residents, vehicles, or traffic may have more collisions simply because it has more exposure. Records without a recognized borough are excluded. Missing injury counts are excluded from injury totals, and the source may be revised. These results do not measure theft, vandalism, insurance premiums, or the probability that an individual driver will be involved in a collision.
+
+## What this example teaches
+
+This vignette demonstrates `select()` and `filter()` for cleaning, `group_by()` and `summarise()` for aggregation, `arrange()` for ranking, and `ggplot()` for visualization. The same workflow can later support more detailed geographic comparisons with suitable denominators and additional datasets.
+
+## References
+
+- NYC Open Data: https://data.cityofnewyork.us/d/h9gi-nx95
+- NYC Open Data API: https://data.cityofnewyork.us/resource/h9gi-nx95.csv
+- dplyr documentation: https://dplyr.tidyverse.org/
